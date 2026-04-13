@@ -66,5 +66,5 @@ paths:
 forecasting:
   horizon_hours: 6
   sequence_length: 24           # 24 hours lookback
-  grid_resolution: 0.005        # ~500m grid cells
+  grid_resolution: 0.01         # ~1km grid cells
   target: "pm25"
