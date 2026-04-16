@@ -1,1 +1,16 @@
 # Configuration file for ConvoLSTM project
+# API key is stored in secrets.json (not committed to git)
+openaq:
+  bbox: [74.174194, 31.358328, 74.448853, 31.620644]  # Lahore bounding box
+  limit: 1000
+  
+# Station quality thresholds for automatic filtering
+stations:
+  min_measurements: 500          # Minimum number of measurements
+  max_days_since_update: 7       # Maximum days since last update
+  min_parameters: 2              # Minimum number of parameters measured
+  required_parameters:           # At least one of these parameters must be present
+    - "pm25"
+    - "pm10"
+    - "no2"
+    - "o3"

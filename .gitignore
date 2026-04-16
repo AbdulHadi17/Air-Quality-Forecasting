@@ -23,3 +23,4 @@ data/raw/*
 .DS_Store
 Thumbs.db
 structure.txt
+secrets.json
