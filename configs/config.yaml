@@ -1,16 +1,70 @@
-# Configuration file for ConvoLSTM project
+# ══════════════════════════════════════════════════════════════
+# Configuration — Lahore AQI Forecasting (Hybrid ConvLSTM)
+# ══════════════════════════════════════════════════════════════
 # API key is stored in secrets.json (not committed to git)
+
+# ─── Project ────────────────────────────────────────────
+project:
+  name: "Lahore AQI Forecasting"
+  root_dir: "."
+
+# ─── OpenAQ ─────────────────────────────────────────────
+# NOTE: 70 of 71 Lahore stations launched in May-Nov 2025.
+# The optimal date range for maximum spatial coverage is
+# 2025-06-01 to 2026-03-31 (~10 months, ~68 stations).
 openaq:
   bbox: [74.174194, 31.358328, 74.448853, 31.620644]  # Lahore bounding box
   limit: 1000
-  
-# Station quality thresholds for automatic filtering
+  parameters: ["pm25", "pm10", "no2", "o3", "so2", "co"]
+  primary_parameter: "pm25"
+  date_from: "2025-06-01"       # Most stations active from June 2025
+  date_to: "2026-03-31"         # ~10 months of dense coverage
+  rate_limit_delay: 0.25        # seconds between API calls
+  max_retries: 3
+  chunk_days: 90                # split date ranges into chunks of this size
+
+# ─── Station Quality Filters ───────────────────────────
+# Pre-fetch: applied using metadata before downloading measurements
+# Post-fetch: applied after download using actual data completeness
 stations:
-  min_measurements: 500          # Minimum number of measurements
-  max_days_since_update: 7       # Maximum days since last update
-  min_parameters: 2              # Minimum number of parameters measured
-  required_parameters:           # At least one of these parameters must be present
-    - "pm25"
-    - "pm10"
-    - "no2"
-    - "o3"
+  required_parameters: ["pm25"]  # PM2.5 is mandatory
+  min_completeness_pct: 30       # >=30% hourly coverage (post-fetch)
+  min_continuous_days: 14        # at least 14 consecutive days (post-fetch)
+  value_range:
+    pm25: [0, 1000]              # µg/m³ — physical bounds
+    pm10: [0, 2000]
+    no2: [0, 500]
+    o3: [0, 600]
+    so2: [0, 500]
+    co: [0, 50]
+
+# ─── Open-Meteo (Weather) ──────────────────────────────
+weather:
+  latitude: 31.4895             # Lahore centroid
+  longitude: 74.3115
+  date_from: "2025-06-01"       # matches OpenAQ range
+  date_to: "2026-03-31"
+  hourly_variables:
+    - temperature_2m
+    - relative_humidity_2m
+    - wind_speed_10m
+    - wind_direction_10m
+    - pressure_msl
+    - precipitation
+    - cloud_cover
+  timezone: "Asia/Karachi"
+
+# ─── Data Paths ─────────────────────────────────────────
+paths:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  sequences_dir: "data/sequences"
+  models_dir: "saved_models"
+  outputs_dir: "outputs"
+
+# ─── Forecasting ────────────────────────────────────────
+forecasting:
+  horizon_hours: 6
+  sequence_length: 24           # 24 hours lookback
+  grid_resolution: 0.005        # ~500m grid cells
+  target: "pm25"
