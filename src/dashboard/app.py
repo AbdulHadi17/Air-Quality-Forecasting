@@ -103,4 +103,4 @@ if data:
             
         st.markdown(f"**Overall Status:** {get_aqi_color(avg_val)}")
 else:
-    st.error("Waiting for FastAPI backend to be available at localhost:8000... Or no mock data is available.")
+    st.error("Waiting for the HuggingFace backend to become available... Or no mock data is available.")
