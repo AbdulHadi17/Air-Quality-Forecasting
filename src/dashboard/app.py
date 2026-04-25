@@ -22,7 +22,7 @@ st.markdown("""
 st.title("🌍 Lahore Air Quality (PM2.5) Spatio-Temporal Forecast")
 st.markdown("Real-time prediction grid powered by Hybrid ConvLSTM.")
 
-API_URL = "http://127.0.0.1:8000/predict/recent"
+API_URL = "https://abdulhadi17-aqi-backend.hf.space/predict/recent"
 
 @st.cache_data(ttl=60)
 def fetch_prediction():
