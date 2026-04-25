@@ -45,7 +45,7 @@ scipy==1.17.1
 seaborn==0.13.2
 setuptools==82.0.1
 six==1.17.0
-tensorflow==2.21.0
+tensorflow
 termcolor==3.3.0
 threadpoolctl==3.6.0
 tqdm==4.67.3
@@ -58,5 +58,5 @@ wrapt==2.1.2
 fastapi
 uvicorn
 streamlit
-olium
+folium
 streamlit-folium
