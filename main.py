@@ -23,6 +23,11 @@ def main():
         description="Lahore AQI Forecasting — Full Pipeline"
     )
     parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="Launch the FastAPI backend and Streamlit dashboard",
+    )
+    parser.add_argument(
         "--skip-ingestion",
         action="store_true",
         help="Skip data ingestion (use existing raw Parquet files)",
@@ -64,6 +69,24 @@ def main():
     logging.info("=" * 60)
     logging.info("  LAHORE AQI FORECASTING — FULL PIPELINE")
     logging.info("=" * 60)
+
+    if args.serve:
+        import subprocess
+        print("\nStarting deployment services...")
+        print("Launching FastAPI Backend on port 8000...")
+        api_proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"])
+        
+        print("Launching Streamlit Dashboard...")
+        dash_proc = subprocess.Popen([sys.executable, "-m", "streamlit", "run", "src/dashboard/app.py"])
+        
+        try:
+            api_proc.wait()
+            dash_proc.wait()
+        except KeyboardInterrupt:
+            print("\nShutting down services...")
+            api_proc.terminate()
+            dash_proc.terminate()
+        return
 
     from src.config_loader import get_config
     config = get_config()

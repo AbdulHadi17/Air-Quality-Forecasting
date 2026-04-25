@@ -331,12 +331,12 @@ class BaselineModels:
         if evaluator:
             evaluator.evaluate(y_test, pred_ridge, "Ridge Regression")
 
-        # 4. Random Forest
-        rf = self.train_random_forest(X_train, y_train)
-        pred_rf = self.predict_random_forest(rf, X_test)
-        predictions["Random Forest"] = pred_rf
-        if evaluator:
-            evaluator.evaluate(y_test, pred_rf, "Random Forest")
+        # 4. Random Forest (Removed for speed)
+        # rf = self.train_random_forest(X_train, y_train)
+        # pred_rf = self.predict_random_forest(rf, X_test)
+        # predictions["Random Forest"] = pred_rf
+        # if evaluator:
+        #     evaluator.evaluate(y_test, pred_rf, "Random Forest")
 
         # 5. XGBoost (optional)
         xgb = self.train_xgboost(X_train, y_train)

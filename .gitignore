@@ -23,8 +23,17 @@ data/raw/*
 .DS_Store
 Thumbs.db
 structure.txt
-secrets.jsondata/sequences/
+secrets.json
+
+# Data and Models
+data/sequences/
+data/processed/
 saved_models/
 logs/
+outputs/
+.tmp.*/
 *.npy
 *.pkl
+
+# Temp & Outputs
+.tmp.driveupload/
