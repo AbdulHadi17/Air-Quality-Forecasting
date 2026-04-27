@@ -24,3 +24,16 @@ data/raw/*
 Thumbs.db
 structure.txt
 secrets.json
+
+# Data and Models
+data/sequences/
+data/processed/
+saved_models/
+logs/
+outputs/
+.tmp.*/
+*.npy
+*.pkl
+
+# Temp & Outputs
+.tmp.driveupload/
