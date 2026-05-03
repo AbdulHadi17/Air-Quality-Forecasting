@@ -37,3 +37,6 @@ outputs/
 
 # Temp & Outputs
 .tmp.driveupload/
+
+secrets.json
+./secrets.json

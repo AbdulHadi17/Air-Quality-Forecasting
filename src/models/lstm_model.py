@@ -19,7 +19,7 @@ from typing import Optional
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional, Input
 from tensorflow.keras.callbacks import (
     EarlyStopping,
     ReduceLROnPlateau,
@@ -69,14 +69,17 @@ class LSTMForecaster:
             Compiled Keras Sequential model.
         """
         model = Sequential([
-            # First LSTM layer — returns sequences for stacking
+            # Explicit Input layer (required by newer Keras)
+            Input(shape=input_shape),
+
+            # First BiLSTM layer — returns sequences for stacking
             Bidirectional(
-                LSTM(128, return_sequences=True, input_shape=input_shape),
+                LSTM(128, return_sequences=True),
                 name="bilstm_1",
             ),
             Dropout(0.3, name="dropout_1"),
 
-            # Second LSTM layer — returns final hidden state
+            # Second BiLSTM layer — returns final hidden state
             Bidirectional(
                 LSTM(64, return_sequences=False),
                 name="bilstm_2",
@@ -95,6 +98,8 @@ class LSTMForecaster:
             metrics=["mae"],
         )
 
+        # Build before count_params (required in newer Keras versions)
+        model.build(input_shape=(None,) + input_shape)
         model.summary(print_fn=lambda x: logging.info(x))
         total_params = model.count_params()
         logging.info(f"LSTM model built: {total_params:,} parameters")

@@ -162,6 +162,12 @@ def main():
     print("\n[5/6] Training models...")
     from src.models.metrics import ModelEvaluator
     from src.models.baseline import BaselineModels
+    import joblib
+
+    target_scaler = None
+    scaler_path = os.path.join(config["paths"]["models_dir"], "target_scaler.pkl")
+    if os.path.exists(scaler_path):
+        target_scaler = joblib.load(scaler_path)
 
     evaluator = ModelEvaluator(config)
 
@@ -176,7 +182,7 @@ def main():
     # ── Baselines ──────────────────────────────────────────
     print("\n  Training baselines...")
     baselines = BaselineModels(config)
-    baseline_preds = baselines.run_all(X_train, y_train, X_test, y_test, evaluator)
+    baseline_preds = baselines.run_all(X_train, y_train, X_test, y_test, evaluator, target_scaler)
 
     if args.baselines_only:
         evaluator.print_comparison()
@@ -194,7 +200,7 @@ def main():
         batch_size=args.batch_size,
     )
     lstm_pred = lstm.predict(X_test)
-    evaluator.evaluate(y_test, lstm_pred, "BiLSTM")
+    evaluator.evaluate(y_test, lstm_pred, "BiLSTM", target_scaler=target_scaler)
     lstm.save()
 
     # ── ConvLSTM ───────────────────────────────────────────
@@ -211,8 +217,22 @@ def main():
                 batch_size=8,
             )
             convlstm_pred = convlstm.predict(convlstm_data["X_test"])
-            evaluator.evaluate(
-                convlstm_data["y_test"], convlstm_pred, "ConvLSTM"
+
+            # Load station_grid_map for station-level evaluation
+            station_grid_map = convlstm_data.get("station_grid_map", None)
+            if station_grid_map is None:
+                map_path = os.path.join(config["paths"]["models_dir"], "station_grid_map.pkl")
+                if os.path.exists(map_path):
+                    station_grid_map = joblib.load(map_path)
+                    logging.info(f"Loaded station_grid_map from {map_path}")
+
+            # Evaluate at station cells only (fair comparison with LSTM)
+            evaluator.evaluate_convlstm_at_stations(
+                convlstm_data["y_test"],
+                convlstm_pred,
+                station_grid_map=station_grid_map or {},
+                model_name="ConvLSTM",
+                target_scaler=target_scaler,
             )
             convlstm.save()
         else:

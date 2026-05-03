@@ -295,6 +295,7 @@ class BaselineModels:
         X_test: np.ndarray,
         y_test: np.ndarray,
         evaluator=None,
+        target_scaler=None,
     ) -> dict[str, np.ndarray]:
         """Train and evaluate all baseline models.
 
@@ -302,6 +303,7 @@ class BaselineModels:
             X_train, y_train: Training data.
             X_test, y_test: Test data.
             evaluator: Optional ModelEvaluator instance for metrics.
+            target_scaler: Optional scaler for inverse transform.
 
         Returns:
             Dictionary of model_name → predictions on test set.
@@ -316,27 +318,27 @@ class BaselineModels:
         pred_naive = self.naive_persistence(X_test)
         predictions["Naive Persistence"] = pred_naive
         if evaluator:
-            evaluator.evaluate(y_test, pred_naive, "Naive Persistence")
+            evaluator.evaluate(y_test, pred_naive, "Naive Persistence", target_scaler=target_scaler)
 
         # 2. Historical Mean
         pred_mean = self.historical_mean(y_train, len(y_test))
         predictions["Historical Mean"] = pred_mean
         if evaluator:
-            evaluator.evaluate(y_test, pred_mean, "Historical Mean")
+            evaluator.evaluate(y_test, pred_mean, "Historical Mean", target_scaler=target_scaler)
 
         # 3. Ridge Regression
         ridge = self.train_ridge(X_train, y_train)
         pred_ridge = self.predict_ridge(ridge, X_test)
         predictions["Ridge Regression"] = pred_ridge
         if evaluator:
-            evaluator.evaluate(y_test, pred_ridge, "Ridge Regression")
+            evaluator.evaluate(y_test, pred_ridge, "Ridge Regression", target_scaler=target_scaler)
 
         # 4. Random Forest (Removed for speed)
         # rf = self.train_random_forest(X_train, y_train)
         # pred_rf = self.predict_random_forest(rf, X_test)
         # predictions["Random Forest"] = pred_rf
         # if evaluator:
-        #     evaluator.evaluate(y_test, pred_rf, "Random Forest")
+        #     evaluator.evaluate(y_test, pred_rf, "Random Forest", target_scaler=target_scaler)
 
         # 5. XGBoost (optional)
         xgb = self.train_xgboost(X_train, y_train)
@@ -344,7 +346,7 @@ class BaselineModels:
             pred_xgb = self.predict_xgboost(xgb, X_test)
             predictions["XGBoost"] = pred_xgb
             if evaluator:
-                evaluator.evaluate(y_test, pred_xgb, "XGBoost")
+                evaluator.evaluate(y_test, pred_xgb, "XGBoost", target_scaler=target_scaler)
 
         logging.info(f"All baselines complete: {list(predictions.keys())}")
         return predictions

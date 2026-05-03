@@ -45,6 +45,7 @@ class SequenceBuilder:
         Path(self.models_dir).mkdir(parents=True, exist_ok=True)
 
         self.scaler = None  # Will be fitted during build
+        self.target_scaler = None
 
         logging.info(
             f"SequenceBuilder initialized: "
@@ -65,6 +66,11 @@ class SequenceBuilder:
 
         For each station, creates overlapping windows of shape
         (seq_length, n_features) with corresponding target values.
+        Windows that span temporal gaps (> 1 hour between consecutive
+        rows) are skipped to preserve temporal continuity.
+
+        Scalers are fit on the training split only, then applied to the
+        test split to prevent data leakage.
 
         Args:
             df: Feature-engineered DataFrame with location_id, timestamp,
@@ -105,34 +111,66 @@ class SequenceBuilder:
 
         logging.info(f"  Clean rows: {len(df_clean)} (dropped {len(df) - len(df_clean)} with NaN target)")
 
-        # Scale features
-        self.scaler = MinMaxScaler()
-        df_clean[feature_cols] = self.scaler.fit_transform(df_clean[feature_cols])
+        # ── TIME-BASED SPLIT BEFORE SCALING (prevents data leakage) ──
+        # Sort globally by timestamp to find the split point
+        df_clean = df_clean.sort_values("timestamp").reset_index(drop=True)
+        global_timestamps = np.sort(df_clean["timestamp"].unique())
+        split_ts = global_timestamps[int(len(global_timestamps) * (1 - test_split))]
 
-        # Build sequences per station
-        all_X, all_y = [], []
+        df_train = df_clean[df_clean["timestamp"] < split_ts].copy()
+        df_test = df_clean[df_clean["timestamp"] >= split_ts].copy()
+
+        logging.info(
+            f"  Time-based split: train={len(df_train)} rows "
+            f"(before {split_ts}), test={len(df_test)} rows"
+        )
+
+        # ── FIT SCALERS ON TRAIN ONLY ──
+        self.scaler = MinMaxScaler()
+        df_train[feature_cols] = self.scaler.fit_transform(df_train[feature_cols])
+        df_test[feature_cols] = self.scaler.transform(df_test[feature_cols])
+
+        self.target_scaler = MinMaxScaler()
+        df_train["target"] = self.target_scaler.fit_transform(df_train[["target"]])
+        df_test["target"] = self.target_scaler.transform(df_test[["target"]])
+
+        # ── BUILD SEQUENCES PER STATION ──
+        train_X, train_y = [], []
+        test_X, test_y = [], []
 
         for loc_id in sorted(df_clean["location_id"].unique()):
-            loc_data = df_clean[df_clean["location_id"] == loc_id].sort_values("timestamp")
-            features = loc_data[feature_cols].values
-            targets = loc_data["target"].values
+            # Train sequences
+            loc_train = df_train[df_train["location_id"] == loc_id].sort_values("timestamp")
+            if len(loc_train) > self.seq_length:
+                X_loc, y_loc = self._create_sliding_windows(
+                    loc_train[feature_cols].values,
+                    loc_train["target"].values,
+                    loc_train["timestamp"].values,
+                )
+                if len(X_loc) > 0:
+                    train_X.append(X_loc)
+                    train_y.append(y_loc)
 
-            X_loc, y_loc = self._create_sliding_windows(features, targets)
-            if len(X_loc) > 0:
-                all_X.append(X_loc)
-                all_y.append(y_loc)
+            # Test sequences
+            loc_test = df_test[df_test["location_id"] == loc_id].sort_values("timestamp")
+            if len(loc_test) > self.seq_length:
+                X_loc, y_loc = self._create_sliding_windows(
+                    loc_test[feature_cols].values,
+                    loc_test["target"].values,
+                    loc_test["timestamp"].values,
+                )
+                if len(X_loc) > 0:
+                    test_X.append(X_loc)
+                    test_y.append(y_loc)
 
-        if not all_X:
-            logging.error("No valid sequences created")
+        if not train_X:
+            logging.error("No valid training sequences created")
             return {}
 
-        X = np.concatenate(all_X, axis=0)
-        y = np.concatenate(all_y, axis=0)
-
-        # Time-based train/test split (no shuffle — preserves temporal order)
-        split_idx = int(len(X) * (1 - test_split))
-        X_train, X_test = X[:split_idx], X[split_idx:]
-        y_train, y_test = y[:split_idx], y[split_idx:]
+        X_train = np.concatenate(train_X, axis=0)
+        y_train = np.concatenate(train_y, axis=0)
+        X_test = np.concatenate(test_X, axis=0) if test_X else np.array([])
+        y_test = np.concatenate(test_y, axis=0) if test_y else np.array([])
 
         # Save
         self._save_sequences(X_train, y_train, X_test, y_test, prefix="lstm")
@@ -152,18 +190,26 @@ class SequenceBuilder:
             "y_test": y_test,
             "feature_names": feature_cols,
             "scaler": self.scaler,
+            "target_scaler": self.target_scaler,
         }
 
     def _create_sliding_windows(
         self,
         features: np.ndarray,
         targets: np.ndarray,
+        timestamps: Optional[np.ndarray] = None,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Create sliding window sequences from a continuous array.
+        """Create sliding window sequences, skipping windows with time gaps.
+
+        A window is only valid if every pair of consecutive timestamps
+        within it differs by exactly 1 hour. This prevents the model
+        from learning on temporally discontinuous sequences.
 
         Args:
             features: Array of shape (n_timesteps, n_features).
             targets: Array of shape (n_timesteps,).
+            timestamps: Array of datetime64 timestamps. If provided,
+                        windows spanning temporal gaps are skipped.
 
         Returns:
             X: Array of shape (n_samples, seq_length, n_features).
@@ -173,10 +219,38 @@ class SequenceBuilder:
         if n <= self.seq_length:
             return np.array([]), np.array([])
 
+        # Pre-compute per-row temporal continuity flags
+        if timestamps is not None:
+            ts = pd.Series(pd.to_datetime(timestamps))
+            diffs_hours = ts.diff().dt.total_seconds() / 3600.0
+            # True if this row is exactly 1 hour after the previous
+            is_contiguous = np.array(diffs_hours == 1.0, dtype=bool)
+            if len(is_contiguous) > 0:
+                is_contiguous[0] = True  # First row has no predecessor
+        else:
+            is_contiguous = None
+
         X, y = [], []
+        skipped = 0
         for i in range(n - self.seq_length):
-            X.append(features[i : i + self.seq_length])
-            y.append(targets[i + self.seq_length - 1])
+            window_end = i + self.seq_length
+
+            # Check temporal continuity within this window
+            if is_contiguous is not None:
+                # All rows from i+1 to window_end-1 must be contiguous
+                # (i.e., each is exactly 1h after its predecessor)
+                if not is_contiguous[i + 1 : window_end].all():
+                    skipped += 1
+                    continue
+
+            X.append(features[i : window_end])
+            y.append(targets[window_end - 1])
+
+        if skipped > 0:
+            logging.info(f"    Skipped {skipped} windows with temporal gaps")
+
+        if not X:
+            return np.array([]), np.array([])
 
         return np.array(X, dtype=np.float32), np.array(y, dtype=np.float32)
 
@@ -192,11 +266,12 @@ class SequenceBuilder:
     ) -> dict[str, np.ndarray]:
         """Build grid-based sequences for ConvLSTM.
 
-        Maps station data onto a spatial grid and creates sequences of
+        Maps station data onto a spatial grid using Haversine-based
+        Inverse Distance Weighting (IDW) and creates sequences of
         shape (samples, timesteps, grid_H, grid_W, n_features).
 
-        Each grid cell gets the value from the nearest station, or
-        inverse-distance-weighted average if multiple stations are close.
+        Scalers are fit on the training split only, then applied to
+        the test split to prevent data leakage.
 
         Args:
             df: Feature-engineered DataFrame.
@@ -219,6 +294,11 @@ class SequenceBuilder:
         )
         logging.info(f"  Mapped {len(station_grid_map)} stations to grid cells")
 
+        # Save station_grid_map for evaluation (station-level metric extraction)
+        map_path = os.path.join(self.models_dir, "station_grid_map.pkl")
+        joblib.dump(station_grid_map, map_path)
+        logging.info(f"  Saved station_grid_map to {map_path}")
+
         # Select feature columns (only primary param + weather for grid)
         grid_features = [self.primary_param]
         weather_cols = [c for c in df.columns if c in [
@@ -234,56 +314,129 @@ class SequenceBuilder:
         df_clean = df.dropna(subset=["target"]).copy()
         df_clean[grid_features] = df_clean[grid_features].ffill().fillna(0)
 
-        # Scale
-        if not hasattr(self, "grid_scaler") or self.grid_scaler is None:
-            self.grid_scaler = MinMaxScaler()
-            df_clean[grid_features] = self.grid_scaler.fit_transform(df_clean[grid_features])
-        else:
-            df_clean[grid_features] = self.grid_scaler.transform(df_clean[grid_features])
+        # ── TIME-BASED SPLIT BEFORE SCALING (prevents data leakage) ──
+        df_clean = df_clean.sort_values("timestamp")
+        global_timestamps = np.sort(df_clean["timestamp"].unique())
+        split_ts = global_timestamps[int(len(global_timestamps) * (1 - test_split))]
 
-        # Get unique sorted timestamps
-        timestamps = sorted(df_clean["timestamp"].unique())
+        df_train = df_clean[df_clean["timestamp"] < split_ts].copy()
+        df_test = df_clean[df_clean["timestamp"] >= split_ts].copy()
+
+        logging.info(
+            f"  Time-based split: train={len(df_train)} rows, "
+            f"test={len(df_test)} rows (split at {split_ts})"
+        )
+
+        # ── FIT SCALERS ON TRAIN ONLY ──
+        self.grid_scaler = MinMaxScaler()
+        df_train[grid_features] = self.grid_scaler.fit_transform(df_train[grid_features])
+        df_test[grid_features] = self.grid_scaler.transform(df_test[grid_features])
+
+        if self.target_scaler is None:
+            self.target_scaler = MinMaxScaler()
+            df_train["target"] = self.target_scaler.fit_transform(df_train[["target"]])
+        else:
+            df_train["target"] = self.target_scaler.transform(df_train[["target"]])
+        df_test["target"] = self.target_scaler.transform(df_test[["target"]])
+
+        # ── BUILD GRIDS USING HAVERSINE IDW ──
         n_features = len(grid_features)
 
-        # Build grid tensor for each timestep
-        grid_series = np.zeros(
-            (len(timestamps), grid_shape[0], grid_shape[1], n_features),
-            dtype=np.float32,
+        # Precompute grid points and Haversine distances
+        Lon, Lat = np.meshgrid(grid_lons, grid_lats)
+        grid_points = np.column_stack([Lat.ravel(), Lon.ravel()])
+
+        def _build_grid_tensor(df_split, split_name):
+            """Build grid tensor and target tensor for a split."""
+            timestamps = sorted(df_split["timestamp"].unique())
+            grid_tensor = np.zeros(
+                (len(timestamps), grid_shape[0], grid_shape[1], n_features),
+                dtype=np.float32,
+            )
+            target_tensor = np.zeros(
+                (len(timestamps), grid_shape[0], grid_shape[1]),
+                dtype=np.float32,
+            )
+
+            for t_idx, ts in enumerate(timestamps):
+                ts_data = df_split[df_split["timestamp"] == ts]
+                ts_data = ts_data.merge(
+                    stations_meta[["location_id", "latitude", "longitude"]],
+                    on="location_id",
+                )
+
+                if len(ts_data) == 0:
+                    continue
+
+                station_points = ts_data[["latitude", "longitude"]].values
+
+                # Haversine distance matrix (grid_points × station_points)
+                dists_km = self._haversine_matrix(grid_points, station_points)
+                dists_km[dists_km == 0] = 1e-6  # avoid div-by-zero
+
+                # IDW weights (inverse square of distance in km)
+                weights = 1.0 / (dists_km ** 2)
+                weights /= weights.sum(axis=1, keepdims=True)
+
+                for f_idx, feat in enumerate(grid_features):
+                    station_vals = ts_data[feat].values
+                    interp_vals = np.sum(weights * station_vals, axis=1)
+                    grid_tensor[t_idx, :, :, f_idx] = interp_vals.reshape(grid_shape)
+
+                target_vals = ts_data["target"].values
+                interp_target = np.sum(weights * target_vals, axis=1)
+                target_tensor[t_idx, :, :] = interp_target.reshape(grid_shape)
+
+            logging.info(
+                f"  {split_name} grid tensor: {grid_tensor.shape}, "
+                f"{len(timestamps)} timesteps"
+            )
+            return grid_tensor, target_tensor, timestamps
+
+        train_grid, train_target, train_timestamps = _build_grid_tensor(
+            df_train, "Train"
         )
-        target_series = np.zeros(
-            (len(timestamps), grid_shape[0], grid_shape[1]),
-            dtype=np.float32,
+        test_grid, test_target, test_timestamps = _build_grid_tensor(
+            df_test, "Test"
         )
 
-        for t_idx, ts in enumerate(timestamps):
-            ts_data = df_clean[df_clean["timestamp"] == ts]
+        # ── CREATE SLIDING WINDOWS (with continuity check) ──
+        def _grid_sliding_windows(grid_tensor, target_tensor, timestamps):
+            ts = pd.Series(pd.to_datetime(timestamps))
+            diffs_hours = ts.diff().dt.total_seconds() / 3600.0
+            is_contiguous = np.array(diffs_hours == 1.0, dtype=bool)
+            if len(is_contiguous) > 0:
+                is_contiguous[0] = True
 
-            for _, row in ts_data.iterrows():
-                loc_id = row["location_id"]
-                if loc_id in station_grid_map:
-                    gi, gj = station_grid_map[loc_id]
-                    for f_idx, feat in enumerate(grid_features):
-                        grid_series[t_idx, gi, gj, f_idx] = row[feat]
-                    target_series[t_idx, gi, gj] = row["target"]
+            X, y = [], []
+            skipped = 0
+            for i in range(len(timestamps) - self.seq_length):
+                window_end = i + self.seq_length
+                # Check temporal continuity (each step must be ~1 hour apart)
+                if not is_contiguous[i + 1 : window_end].all():
+                    skipped += 1
+                    continue
+                X.append(grid_tensor[i:window_end])
+                y.append(target_tensor[window_end - 1])
+            if skipped > 0:
+                logging.info(f"    Skipped {skipped} grid windows with temporal gaps")
+            return X, y
 
-        # Create sliding window sequences over grid
-        X, y = [], []
-        for i in range(len(timestamps) - self.seq_length):
-            X.append(grid_series[i : i + self.seq_length])
-            # Target: primary param grid at the last timestep
-            y.append(target_series[i + self.seq_length - 1])
+        train_X_list, train_y_list = _grid_sliding_windows(
+            train_grid, train_target, train_timestamps
+        )
+        test_X_list, test_y_list = _grid_sliding_windows(
+            test_grid, test_target, test_timestamps
+        )
 
-        if not X:
-            logging.error("No valid ConvLSTM sequences created")
+        if not train_X_list:
+            logging.error("No valid ConvLSTM training sequences created")
             return {}
 
-        X = np.array(X, dtype=np.float32)
-        y = np.array(y, dtype=np.float32)
-
-        # Time-based split
-        split_idx = int(len(X) * (1 - test_split))
-        X_train, X_test = X[:split_idx], X[split_idx:]
-        y_train, y_test = y[:split_idx], y[split_idx:]
+        X_train = np.array(train_X_list, dtype=np.float32)
+        y_train = np.array(train_y_list, dtype=np.float32)
+        X_test = np.array(test_X_list, dtype=np.float32) if test_X_list else np.array([])
+        y_test = np.array(test_y_list, dtype=np.float32) if test_y_list else np.array([])
 
         # Save
         self._save_sequences(X_train, y_train, X_test, y_test, prefix="convlstm")
@@ -349,6 +502,35 @@ class SequenceBuilder:
 
         return station_grid_map
 
+    @staticmethod
+    def _haversine_matrix(
+        points_a: np.ndarray,
+        points_b: np.ndarray,
+    ) -> np.ndarray:
+        """Compute pairwise Haversine distances between two sets of points.
+
+        Args:
+            points_a: Array of shape (N, 2) with [latitude, longitude] in degrees.
+            points_b: Array of shape (M, 2) with [latitude, longitude] in degrees.
+
+        Returns:
+            Distance matrix of shape (N, M) in kilometres.
+        """
+        R = 6371.0  # Earth radius in km
+
+        lat1 = np.radians(points_a[:, 0]).reshape(-1, 1)
+        lon1 = np.radians(points_a[:, 1]).reshape(-1, 1)
+        lat2 = np.radians(points_b[:, 0]).reshape(1, -1)
+        lon2 = np.radians(points_b[:, 1]).reshape(1, -1)
+
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+
+        a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
+        c = 2 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
+
+        return R * c
+
     # ══════════════════════════════════════════════════════════
     # PERSISTENCE
     # ══════════════════════════════════════════════════════════
@@ -383,6 +565,11 @@ class SequenceBuilder:
             path = os.path.join(self.models_dir, "scaler.pkl")
             joblib.dump(self.scaler, path)
             logging.info(f"  Saved scaler to {path}")
+            
+        if self.target_scaler is not None:
+            path = os.path.join(self.models_dir, "target_scaler.pkl")
+            joblib.dump(self.target_scaler, path)
+            logging.info(f"  Saved target scaler to {path}")
 
     @staticmethod
     def load_sequences(sequences_dir: str, prefix: str) -> dict[str, np.ndarray]:

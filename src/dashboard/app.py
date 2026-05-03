@@ -39,40 +39,33 @@ with st.sidebar:
         st.cache_data.clear()
     
     st.markdown("---")
-    st.markdown("**Model:** ConvLSTM Spatial Grid")
-    st.markdown("**Resolution:** ~1km (0.005°)")
+    st.markdown("**Model:** XGBoost Point-based Regressor")
+    st.markdown("**Spatial Aggregation:** Folium Heatmap Interpolation")
     st.markdown("**City:** Lahore, Pakistan")
 
 data = fetch_prediction()
 
 if data:
-    lats = data["grid_lats"]
-    lons = data["grid_lons"]
-    preds = data["predictions"]
+    heat_data = data.get("predictions", [])
     
-    heat_data = []
     max_val = 0
     avg_val = 0
     valid_points = 0
     
-    for i in range(len(lats)):
-        for j in range(len(lons)):
-            val = preds[i][j]
-            if val > 0: 
-                heat_data.append([lats[i], lons[j], val])
-                if val > max_val:
-                    max_val = val
-                avg_val += val
-                valid_points += 1
-                
+    for p in heat_data:
+        val = p[2]
+        if val > max_val: max_val = val
+        avg_val += val
+        valid_points += 1
+            
     if valid_points > 0:
         avg_val = avg_val / valid_points
 
     col1, col2 = st.columns([3, 1])
     
     with col1:
-        center_lat = sum(lats)/len(lats) if lats else 31.4895
-        center_lon = sum(lons)/len(lons) if lons else 74.3115
+        center_lat = sum(p[0] for p in heat_data)/len(heat_data) if heat_data else 31.4895
+        center_lon = sum(p[1] for p in heat_data)/len(heat_data) if heat_data else 74.3115
         
         m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles="CartoDB dark_matter")
         
